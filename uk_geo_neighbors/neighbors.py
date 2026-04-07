@@ -212,14 +212,13 @@ def find_bordering_areas(
     results["borders_target"] = results["distance_m"] < buffer_metres
 
     # Shared border length — only meaningful for direct neighbours
-    results["shared_border_m"] = results.geometry.apply(
-        lambda geom: round(
-            target_boundary.intersection(geom.boundary).length
-            if results["borders_target"][results.geometry == geom].any()
-            else 0.0,
-            1
-        )
-    )
+    def calculate_shared_border(row):
+        if row["borders_target"]:
+            return round(target_boundary.intersection(row.geometry.boundary).length, 1)
+        else:
+            return 0.0
+    
+    results["shared_border_m"] = results.apply(calculate_shared_border, axis=1)
 
     # ------------------------------------------------------------------ #
     # 7. Sort and tidy output                                             #
