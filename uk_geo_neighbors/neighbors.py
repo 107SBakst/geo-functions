@@ -227,8 +227,148 @@ def find_bordering_areas(
 
     if not return_geometry:
         # Drop geometry for lighter output
-        info_cols = [c for c in [name_col, code_col] if c] 
+        info_cols = [c for c in [name_col, code_col] if c]
         metric_cols = ["distance_m", "distance_km", "borders_target", "shared_border_m"]
+        return pd.DataFrame(results[info_cols + metric_cols])
+
+    return results
+
+
+def find_areas_within(
+    smaller_gdf: gpd.GeoDataFrame,
+    larger_gdf: gpd.GeoDataFrame,
+    larger_area_query: str,
+    larger_name_col: Optional[str] = None,
+    larger_code_col: Optional[str] = None,
+    smaller_name_col: Optional[str] = None,
+    smaller_code_col: Optional[str] = None,
+    fuzzy: bool = True,
+    return_geometry: bool = True,
+) -> gpd.GeoDataFrame:
+    """
+    Find all smaller administrative areas (e.g. wards) that fall within or
+    overlap a named larger administrative area (e.g. a local authority).
+
+    Any smaller area that intersects the larger area at all is included —
+    this covers both fully-contained areas and partial overlaps that cross
+    the boundary.
+
+    Parameters
+    ----------
+    smaller_gdf : GeoDataFrame
+        GeoDataFrame of the smaller areas (e.g. wards, LSOAs).
+    larger_gdf : GeoDataFrame
+        GeoDataFrame of the larger areas (e.g. local authorities).
+    larger_area_query : str
+        Name or ONS code of the specific larger area to look up.
+        e.g. "Barnet", "E09000003"
+    larger_name_col : str or None
+        Name column in larger_gdf. Auto-detected if None.
+    larger_code_col : str or None
+        Code column in larger_gdf. Auto-detected if None.
+    smaller_name_col : str or None
+        Name column in smaller_gdf. Auto-detected if None.
+    smaller_code_col : str or None
+        Code column in smaller_gdf. Auto-detected if None.
+    fuzzy : bool
+        If True, falls back to partial string matching for the larger area query.
+    return_geometry : bool
+        If True (default), returns a GeoDataFrame with geometries.
+        If False, returns a plain DataFrame.
+
+    Returns
+    -------
+    GeoDataFrame (or DataFrame if return_geometry=False) containing all
+    smaller areas that intersect the named larger area, with extra columns:
+        - overlap_area_m2 : area of intersection with the larger area in m²
+        - pct_within      : percentage of the smaller area's total area that
+                            lies within the larger area (0–100)
+        - fully_within    : True if the smaller area is entirely inside the
+                            larger area
+
+    Examples
+    --------
+    Find all wards within Barnet:
+    >>> wards_in_barnet = find_areas_within(wards_gdf, las_gdf, "Barnet")
+
+    Find all LSOAs within a local authority by ONS code:
+    >>> lsoas = find_areas_within(lsoa_gdf, la_gdf, "E09000003")
+    """
+
+    # ------------------------------------------------------------------ #
+    # 1. Reproject both GDFs to British National Grid (metres)            #
+    # ------------------------------------------------------------------ #
+    for label, gdf in [("smaller_gdf", smaller_gdf), ("larger_gdf", larger_gdf)]:
+        if gdf.crs is None:
+            raise ValueError(
+                f"{label} has no CRS set. Set it before calling this function."
+            )
+
+    if smaller_gdf.crs.to_epsg() != 27700:
+        smaller_gdf = smaller_gdf.to_crs(epsg=27700)
+    if larger_gdf.crs.to_epsg() != 27700:
+        larger_gdf = larger_gdf.to_crs(epsg=27700)
+
+    # ------------------------------------------------------------------ #
+    # 2. Auto-detect columns in each GDF                                  #
+    # ------------------------------------------------------------------ #
+    det_larger_name, det_larger_code = _detect_columns(larger_gdf)
+    larger_name_col = larger_name_col or det_larger_name
+    larger_code_col = larger_code_col or det_larger_code
+
+    det_smaller_name, det_smaller_code = _detect_columns(smaller_gdf)
+    smaller_name_col = smaller_name_col or det_smaller_name
+    smaller_code_col = smaller_code_col or det_smaller_code
+
+    print(f"Larger area columns  — name: '{larger_name_col}', code: '{larger_code_col}'")
+    print(f"Smaller area columns — name: '{smaller_name_col}', code: '{smaller_code_col}'")
+
+    # ------------------------------------------------------------------ #
+    # 3. Find the named larger area                                       #
+    # ------------------------------------------------------------------ #
+    target = _find_target(larger_gdf, larger_area_query, larger_name_col, larger_code_col, fuzzy)
+    target_geom = target.geometry.iloc[0]
+    target_label = (
+        target[larger_name_col].iloc[0] if larger_name_col
+        else target[larger_code_col].iloc[0]
+    )
+    print(f"Larger area found: {target_label}")
+
+    # ------------------------------------------------------------------ #
+    # 4. Spatial index pre-filter, then precise intersection check        #
+    # ------------------------------------------------------------------ #
+    candidate_idx = list(smaller_gdf.sindex.intersection(target_geom.bounds))
+    candidates = smaller_gdf.iloc[candidate_idx]
+
+    results = candidates[candidates.geometry.intersects(target_geom)].copy()
+
+    if results.empty:
+        print(f"No smaller areas found within '{target_label}'.")
+        return results
+
+    # ------------------------------------------------------------------ #
+    # 5. Compute overlap metrics                                          #
+    # ------------------------------------------------------------------ #
+    results["overlap_area_m2"] = results.geometry.apply(
+        lambda geom: round(geom.intersection(target_geom).area, 1)
+    )
+    results["pct_within"] = (
+        (results["overlap_area_m2"] / results.geometry.area * 100)
+        .round(2)
+        .clip(upper=100.0)
+    )
+    results["fully_within"] = results.geometry.apply(
+        lambda geom: target_geom.contains(geom)
+    )
+
+    # ------------------------------------------------------------------ #
+    # 6. Sort by pct_within descending then tidy                          #
+    # ------------------------------------------------------------------ #
+    results = results.sort_values("pct_within", ascending=False).reset_index(drop=True)
+
+    if not return_geometry:
+        info_cols = [c for c in [smaller_name_col, smaller_code_col] if c]
+        metric_cols = ["overlap_area_m2", "pct_within", "fully_within"]
         return pd.DataFrame(results[info_cols + metric_cols])
 
     return results

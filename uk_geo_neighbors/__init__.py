@@ -12,14 +12,15 @@ using geopandas. It works with any UK administrative boundary dataset including:
 - NHS boundaries
 - And more...
 
-Main function:
+Main functions:
 - find_bordering_areas: Find areas that border or are near a target area
+- find_areas_within: Find all smaller areas within or overlapping a named larger area
 """
 
-from .neighbors import find_bordering_areas
+from .neighbors import find_bordering_areas, find_areas_within
 
 __version__ = "0.1.0"
 __author__ = "Samuel Bakst"
 __email__ = "107sbakst@gmail.com"
 
-__all__ = ["find_bordering_areas"]
+__all__ = ["find_bordering_areas", "find_areas_within"]
